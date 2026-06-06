@@ -8,7 +8,6 @@ from pathlib import Path
 
 import config
 from coder.cli import repl
-from coder.llm import make_client
 
 # Default model per provider (overridable with --model or the *_MODEL env vars).
 _MODEL_FOR = {
@@ -40,8 +39,7 @@ def main() -> None:
 
     provider = args.provider
     model = args.model or _MODEL_FOR.get(provider, config.OLLAMA_MODEL)
-    client = make_client(provider, model, num_ctx=config.NUM_CTX, ollama_host=config.OLLAMA_HOST)
-    repl(client, repo)
+    repl(repo, provider, model)
 
 
 if __name__ == "__main__":

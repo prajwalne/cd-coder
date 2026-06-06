@@ -28,17 +28,72 @@ def _is_transient(err: Exception) -> bool:
 
 def _rate_limit_kind(err: Exception):
     """Return 'too_big' (one request exceeds the limit; retrying is futile),
-    'pace' (limit hit across requests; wait and retry), or None."""
+    'pace' (limit hit across requests; wait and retry), or None.
+
+    Only fires on genuine rate signals \u2014 a rate phrase, or 429/413 as an
+    actual HTTP/status code \u2014 NOT on a stray '429'/'413' that happens to
+    appear in a token count, id, or byte size (the old substring check did, which
+    mislabeled unrelated errors like 503s as rate limits)."""
     s = str(err).lower()
-    if "rate_limit" not in s and "413" not in s and "429" not in s and "too large" not in s:
+    rate_words = ("rate_limit", "rate limit", "too many requests", "resource_exhausted",
+                  "quota exceeded", "quota", "too large", "reduce your message")
+    status = re.search(r"(?:http|code|status)\D{0,8}(429|413)\b", s)
+    if not any(w in s for w in rate_words) and not status:
         return None
-    import re as _re
-    m = _re.search(r"limit\s+(\d+).*?requested\s+(\d+)", s)
+    m = re.search(r"limit\s+(\d+).*?requested\s+(\d+)", s)
     if m and int(m.group(2)) > int(m.group(1)):
         return "too_big"
-    if "too large" in s or "413" in s or "reduce your message" in s:
+    if "too large" in s or "reduce your message" in s or (status and status.group(1) == "413"):
         return "too_big"
     return "pace"
+
+
+def _clean_err(err) -> str:
+    """A readable one-liner from a provider error: JSON 'message' + status code
+    if present, else a trimmed string. Replaces mid-JSON truncation so you can
+    actually see what failed (a 503 overload vs a real 429, etc.)."""
+    s = str(err)
+    mcode = re.search(r"http (\d{3})|\bcode[\"']?\s*[:=]\s*(\d{3})", s.lower())
+    code = (mcode.group(1) or mcode.group(2)) if mcode else None
+    mmsg = re.search(r'"message"\s*:\s*"([^"]+)"', s)
+    msg = (mmsg.group(1) if mmsg else s).strip()
+    if len(msg) > 240:
+        msg = msg[:240] + "\u2026"
+    return f"{code + ': ' if code else ''}{msg}"
+
+
+def _retry_after_seconds(err):
+    """Pull the provider's stated wait from the error (Retry-After header or a
+    'try again in Xs' / 'retryDelay: Ns' in the body). None if not present."""
+    s = str(err).lower()
+    m = re.search(r"try again in\s+(?:(\d+)\s*m)?\s*([\d.]+)\s*s", s)
+    if m:
+        return (int(m.group(1)) if m.group(1) else 0) * 60 + float(m.group(2))
+    m = re.search(r"retry[\s_-]*after[\"']?\s*[:=]?\s*[\"']?\s*(\d+(?:\.\d+)?)", s)
+    if m:
+        return float(m.group(1))
+    m = re.search(r"retrydelay[\"']?\s*[:=]\s*[\"']?\s*(\d+(?:\.\d+)?)\s*s", s)
+    if m:
+        return float(m.group(1))
+    m = re.search(r"in\s+([\d.]+)\s*seconds", s)
+    if m:
+        return float(m.group(1))
+    return None
+
+
+def _switch_hint():
+    return ("    don't want to wait? switch model/provider:  /provider <name>   or   "
+            "/model <id>   (run them with no argument to list options)")
+
+
+def _pace_notice(provider, model, wait):
+    return (f"\033[33m  \u26a0 rate limit on {provider}/{model}. retrying automatically in "
+            f"{wait:.0f}s.\033[0m\n\033[2m{_switch_hint()}\033[0m")
+
+
+def _too_big_msg(provider, model):
+    return (f"request too large for {provider}/{model}'s per-minute limit \u2014 waiting won't "
+            f"help. Shrink the context, or switch: /provider <name> / /model <id>.")
 
 
 def _call_with_retries(fn, label="backend", attempts=3, base_delay=1.0):
@@ -52,7 +107,7 @@ def _call_with_retries(fn, label="backend", attempts=3, base_delay=1.0):
             last = e
             if i < attempts - 1 and _is_transient(e):
                 wait = base_delay * (2 ** i)
-                print(f"\033[33m  \u21bb {label} hiccup ({str(e)[:70]}); retry {i+1}/{attempts-1} in {wait:.0f}s\033[0m")
+                print(f"\033[33m  \u21bb {label} hiccup: {_clean_err(e)} \u2014 retry {i+1}/{attempts-1} in {wait:.0f}s\033[0m")
                 time.sleep(wait)
                 continue
             break
@@ -134,19 +189,18 @@ class GroqClient:
                 err = str(e)
                 kind = _rate_limit_kind(e)
                 if kind == "too_big":
-                    raise BackendError(
-                        "request too large for this model's per-minute token limit. "
-                        "The repo map / context is too big, or the model's TPM is too low. "
-                        "Shrink context or use a higher-TPM model. Original: " + err[:160]) from e
+                    raise BackendError(_too_big_msg(getattr(self, "provider", "?"), self.model)
+                                       + " (" + _clean_err(e) + ")") from e
                 if kind == "pace" and attempt < 2:
-                    print("\033[33m  \u21bb rate limit hit; waiting 20s\u2026\033[0m")
-                    time.sleep(20)
+                    wait = _retry_after_seconds(e) or 20
+                    print(_pace_notice(getattr(self, "provider", "?"), self.model, wait))
+                    time.sleep(wait)
                     last_err = e
                     continue
                 malformed = "tool_use_failed" in err or "output_parse_failed" in err
                 if (malformed or _is_transient(e)) and attempt < 2:
                     if _is_transient(e):
-                        print(f"\033[33m  \u21bb Groq hiccup ({err[:70]}); retrying\u2026\033[0m")
+                        print(f"\033[33m  \u21bb Groq hiccup: {_clean_err(e)}; retrying\u2026\033[0m")
                         time.sleep(1.0 * (2 ** attempt))
                     else:
                         print("\033[2m  \u21bb retrying (model emitted a malformed tool call)\033[0m")
@@ -205,7 +259,9 @@ class OpenAICompatClient:
                 return json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             body_txt = e.read().decode("utf-8", "replace")
-            raise Exception(f"HTTP {e.code}: {body_txt}") from e
+            ra = e.headers.get("Retry-After") or e.headers.get("retry-after") or ""
+            extra = f" retry-after: {ra}" if ra else ""
+            raise Exception(f"HTTP {e.code}: {body_txt}{extra}") from e
 
     def chat(self, messages, tools) -> Reply:
         body = {"model": self.model, "messages": messages,
@@ -218,11 +274,17 @@ class OpenAICompatClient:
             except Exception as e:
                 kind = _rate_limit_kind(e)
                 if kind == "too_big":
-                    raise BackendError("request too large for this model/tier. Shrink context. "
-                                       + str(e)[:160]) from e
-                if (kind == "pace" or _is_transient(e)) and attempt < 2:
-                    print("\033[33m  \u21bb backend hiccup/limit; waiting 20s\u2026\033[0m")
-                    time.sleep(20)
+                    raise BackendError(_too_big_msg(getattr(self, "provider", "?"), self.model)
+                                       + " (" + _clean_err(e) + ")") from e
+                if kind == "pace" and attempt < 2:
+                    wait = _retry_after_seconds(e) or 20
+                    print(_pace_notice(getattr(self, "provider", "?"), self.model, wait))
+                    time.sleep(wait)
+                    last_err = e
+                    continue
+                if _is_transient(e) and attempt < 2:
+                    print(f"\033[33m  \u21bb backend hiccup: {_clean_err(e)}; retrying\u2026\033[0m")
+                    time.sleep(2 ** attempt)
                     last_err = e
                     continue
                 raise
@@ -251,20 +313,23 @@ class OpenAICompatClient:
 def make_client(provider: str, model: str, num_ctx: int = 32768, ollama_host: str = None):
     provider = provider.lower()
     if provider == "ollama":
-        return OllamaClient(model, num_ctx=num_ctx, host=ollama_host)
-    if provider == "groq":
-        return GroqClient(model)
-    if provider == "openrouter":
-        return OpenAICompatClient(model, "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY")
-    if provider == "gemini":
-        return OpenAICompatClient(
+        c = OllamaClient(model, num_ctx=num_ctx, host=ollama_host)
+    elif provider == "groq":
+        c = GroqClient(model)
+    elif provider == "openrouter":
+        c = OpenAICompatClient(model, "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY")
+    elif provider == "gemini":
+        c = OpenAICompatClient(
             model, "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY")
-    if provider == "cerebras":
-        return OpenAICompatClient(model, "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY")
-    if provider == "github":
-        return OpenAICompatClient(model, "https://models.github.ai/inference", "GITHUB_TOKEN")
-    raise ValueError(f"Unknown provider '{provider}'. Use ollama, groq, openrouter, "
-                     f"gemini, cerebras, or github.")
+    elif provider == "cerebras":
+        c = OpenAICompatClient(model, "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY")
+    elif provider == "github":
+        c = OpenAICompatClient(model, "https://models.github.ai/inference", "GITHUB_TOKEN")
+    else:
+        raise ValueError(f"Unknown provider '{provider}'. Use ollama, groq, openrouter, "
+                         f"gemini, cerebras, or github.")
+    c.provider = provider
+    return c
 
 def _sanitize_jsonish(text: str) -> str:
     """Repair JS/Java-isms small models emit when typing a tool call as text."""
