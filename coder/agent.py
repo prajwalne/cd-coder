@@ -22,6 +22,11 @@ KEEP_RECENT = 6          # most recent messages always kept in full
 MAX_CONTINUE = 2         # how many times we nudge a truncated reply to continue
 
 
+import config as _config
+_BUDGETS = {"groq": 4500, "ollama": 24000, "openrouter": 12000,
+            "gemini": 16000, "cerebras": 6000, "github": 16000}
+REQUEST_TOKEN_BUDGET = _BUDGETS.get(_config.PROVIDER, 8000)
+
 def _msg_field(m, key):
     return m.get(key) if isinstance(m, dict) else getattr(m, key, None)
 

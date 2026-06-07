@@ -155,7 +155,7 @@ class OllamaClient:
         ]
         text_out = msg.content
         if not calls and msg.content:  # model typed the call as text
-            recovered = _extract_tool_calls_from_text(msg.content)
+            recovered = _extract_xml_tool_calls(msg.content) or _extract_tool_calls_from_text(msg.content)
             if recovered:
                 calls = recovered
                 text_out = None              # don't print the raw JSON
@@ -247,6 +247,7 @@ class OpenAICompatClient:
         self.model = model
         self.url = base_url.rstrip("/") + "/chat/completions"
 
+    # AFTER
     def _post(self, body: dict) -> dict:
         import urllib.request
         import urllib.error
@@ -254,9 +255,10 @@ class OpenAICompatClient:
         req = urllib.request.Request(
             self.url, data=data, method="POST",
             headers={"Authorization": f"Bearer {self.key}",
-                     "Content-Type": "application/json"})
+                     "Content-Type": "application/json",
+                     "X-Title": "cd-coder"})
         try:
-            with urllib.request.urlopen(req, timeout=120) as r:
+            with urllib.request.urlopen(req, timeout=300) as r:
                 return json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             body_txt = e.read().decode("utf-8", "replace")
@@ -266,7 +268,7 @@ class OpenAICompatClient:
 
     def chat(self, messages, tools) -> Reply:
         body = {"model": self.model, "messages": messages,
-                "tools": tools, "max_tokens": 4096}
+                "tools": tools, "max_tokens": 8192}
         last_err = None
         print("in chat")
         for attempt in range(3):
@@ -306,6 +308,14 @@ class OpenAICompatClient:
                 for tc in tcs]
         reply = Reply(msg.get("content"), calls, assistant)
         reply.finish_reason = choice.get("finish_reason")
+        # in OpenAICompatClient.chat(), BEFORE the return reply line
+        if not calls and msg.get("content"):
+            recovered = _extract_xml_tool_calls(msg["content"]) or _extract_tool_calls_from_text(msg["content"])
+            if recovered:
+                calls = recovered
+                clean = re.sub(r'<function=.*?</function>', '', msg["content"], flags=re.DOTALL).strip()
+                assistant["content"] = clean
+        reply = Reply(msg.get("content"), calls, assistant)
         return reply
 
     def tool_message(self, call: ToolCall, output: str) -> dict:
@@ -368,4 +378,26 @@ def _extract_tool_calls_from_text(text):
                 except json.JSONDecodeError:
                     args = {}
             found.append(ToolCall(None, obj["name"], args if isinstance(args, dict) else {}))
+    return found
+
+# ADD this function above _extract_tool_calls_from_text
+
+def _extract_xml_tool_calls(text: str):
+    """Recover tool calls emitted as <function=name><parameter=x>val</parameter></function>"""
+    import re
+    found = []
+    pattern = re.compile(
+        r'<function=(\w+)>(.*?)</function>',
+        re.DOTALL
+    )
+    param_pattern = re.compile(
+        r'<parameter=(\w+)>(.*?)</parameter>',
+        re.DOTALL
+    )
+    for m in pattern.finditer(text):
+        name = m.group(1)
+        body = m.group(2)
+        args = {p.group(1): p.group(2).strip()
+                for p in param_pattern.finditer(body)}
+        found.append(ToolCall(None, name, args))
     return found

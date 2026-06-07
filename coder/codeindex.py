@@ -24,13 +24,16 @@ def _name(node, b):
     return b[n.start_byte:n.end_byte].decode("utf-8", "replace") if n else None
 
 
+# AFTER
 def _annotations_of(decl, b):
     out = []
     mods = next((c for c in decl.children if c.type == "modifiers"), None)
     if mods:
         for c in mods.children:
             if c.type in ("annotation", "marker_annotation"):
-                out.append(_name(c, b) or b[c.start_byte:c.end_byte].decode()[:40])
+                # full text e.g. @Scheduled(cron="0 0 * * *") not just "Scheduled"
+                full = b[c.start_byte:c.end_byte].decode("utf-8", "replace")[:120]
+                out.append(full)
     return out
 
 

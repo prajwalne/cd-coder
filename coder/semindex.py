@@ -46,16 +46,22 @@ def _symbol_text(name, kind, body):
     return f"{kind} {name} ({_camel_words(name)})\n{body[:600]}"
 
 
-def build_embeddings(repo: Path, db_path: str, embed_fn) -> int:
+def build_embeddings(repo: Path, db_path: str, embed_fn,
+                     workers: int = 200) -> int:
     """Embed every method/class and store vectors. embed_fn(text)->list[float].
-    Idempotent: rebuilds the embeddings table."""
-    db = sqlite3.connect(db_path)
-    db.execute("DROP TABLE IF EXISTS embeddings")
-    db.execute("CREATE TABLE embeddings(name TEXT, kind TEXT, file TEXT, "
-               "line_start INT, line_end INT, vec TEXT)")
-    n = 0
+    Idempotent: rebuilds the embeddings table.
+
+    Uses a thread pool so Ollama gets concurrent requests — the model stays warm
+    (no per-call load/unload overhead) and throughput is workers× faster than
+    the sequential version."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+
+    # step 1: collect all tasks (fast — just tree-sitter parsing, no Ollama)
+    SKIP = {".git", "target", "build", ".idea", ".gradle", "out", "logs", "log"}
+    tasks = []
     for path in repo.rglob("*.java"):
-        if any(p in (".git", "target", "build") for p in path.parts):
+        if any(p in SKIP for p in path.parts):
             continue
         rel = str(path.relative_to(repo))
         src = path.read_text(encoding="utf-8", errors="replace")
@@ -64,13 +70,48 @@ def build_embeddings(repo: Path, db_path: str, embed_fn) -> int:
             if s["kind"] not in ("method", "constructor", "class", "interface"):
                 continue
             body = "\n".join(lines[s["line_start"] - 1:s["line_end"]])
-            vec = embed_fn(_symbol_text(s["name"], s["kind"], body))
-            db.execute("INSERT INTO embeddings VALUES (?,?,?,?,?,?)",
-                       (s["name"], s["kind"], rel, s["line_start"], s["line_end"], json.dumps(vec)))
-            n += 1
+            tasks.append((s["name"], s["kind"], rel,
+                          s["line_start"], s["line_end"],
+                          _symbol_text(s["name"], s["kind"], body)))
+
+    total = len(tasks)
+    print(f"[INDEX] {total} symbols found — embedding with {workers} workers")
+
+    # step 2: embed concurrently
+    def _embed(task):
+        name, kind, rel, ls, le, text = task
+        try:
+            return (name, kind, rel, ls, le, json.dumps(embed_fn(text)), None)
+        except Exception as e:
+            return (name, kind, rel, ls, le, None, str(e))
+
+    done_count = 0
+    lock = threading.Lock()
+    rows = []
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = {pool.submit(_embed, t): t for t in tasks}
+        for fut in as_completed(futs):
+            name, kind, rel, ls, le, vec, err = fut.result()
+            with lock:
+                done_count += 1
+                if done_count % 25 == 0 or done_count == total:
+                    print(f"[INDEX] {done_count}/{total} embedded")
+            if vec:
+                rows.append((name, kind, rel, ls, le, vec))
+            else:
+                print(f"[WARN]  skip {name}: {err}")
+
+    # step 3: single bulk insert (much faster than row-by-row)
+    db = sqlite3.connect(db_path)
+    db.execute("DROP TABLE IF EXISTS embeddings")
+    db.execute("CREATE TABLE embeddings(name TEXT, kind TEXT, file TEXT, "
+               "line_start INT, line_end INT, vec TEXT)")
+    db.executemany("INSERT INTO embeddings VALUES (?,?,?,?,?,?)", rows)
     db.commit()
     db.close()
-    return n
+    print(f"[INDEX] Done: {len(rows)}/{total} symbols indexed.")
+    return len(rows)
 
 
 def semantic_search(db_path: str, query: str, embed_fn, top: int = 6):
