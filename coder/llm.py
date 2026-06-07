@@ -145,7 +145,8 @@ class OllamaClient:
         resp = _call_with_retries(
             lambda: self._client.chat(
                 model=self.model, messages=messages, tools=tools,
-                options={"num_ctx": self.num_ctx}),
+                options={"num_ctx": self.num_ctx}
+            ),
             label="Ollama")
         msg = resp.message
         calls = [
@@ -267,6 +268,7 @@ class OpenAICompatClient:
         body = {"model": self.model, "messages": messages,
                 "tools": tools, "max_tokens": 4096}
         last_err = None
+        print("in chat")
         for attempt in range(3):
             try:
                 resp = self._post(body)
