@@ -19,14 +19,15 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
 def active_model() -> str:
     return {"groq": GROQ_MODEL, "openrouter": OPENROUTER_MODEL, "gemini": GEMINI_MODEL,
-            "cerebras": CEREBRAS_MODEL, "github": GITHUB_MODEL}.get(PROVIDER, OLLAMA_MODEL)
+            "cerebras": CEREBRAS_MODEL, "github": GITHUB_MODEL,
+            "vllm": VLLM_MODEL}.get(PROVIDER, OLLAMA_MODEL)
 
 
 # ---- Provider / model catalog (edit + ship via git; this is the source of the
 # /provider and /model command lists). The user's CURRENT pick is persisted in
 # .env, not here, so updates never clobber it. ----
 
-PROVIDERS = ["ollama", "groq", "openrouter", "gemini", "cerebras", "github"]
+PROVIDERS = ["ollama", "groq", "openrouter", "gemini", "vllm"]
 
 # Which env var holds each provider's key (None = no key needed). Used to refuse
 # a switch into a provider whose key isn't set yet.
@@ -37,6 +38,7 @@ PROVIDER_KEY_ENV = {
     "gemini": "GEMINI_API_KEY",
     "cerebras": "CEREBRAS_API_KEY",
     "github": "GITHUB_TOKEN",
+    "vllm": None,   # no key needed
 }
 
 # Suggested models per provider (the /model list). Free to extend.
@@ -57,6 +59,10 @@ MODEL_CATALOG = {
     "github": [("gpt-4o", "GPT-4o quality; ~150/day")],
     "ollama": [("qwen3-coder", "local, unlimited, slow"),
                ("qwen2.5-coder:7b", "local, smaller")],
+   "vllm": [
+        ("Qwen/Qwen3-Coder-30B-A3B-Instruct", "30B MoE, 2x T4 Kaggle"),
+        ("Qwen/Qwen3-8B", "single T4"),
+    ],
 }
 
 
@@ -98,3 +104,6 @@ def set_env_var(key: str, value: str) -> None:
     kept.append(f"{key}={value}")
     path.write_text("\n".join(kept) + "\n")
     os.environ[key] = value
+
+VLLM_MODEL = os.getenv("VLLM_MODEL", "Qwen/Qwen3-Coder-30B-A3B-Instruct")
+VLLM_HOST = os.getenv("VLLM_HOST", "http://localhost:8000")

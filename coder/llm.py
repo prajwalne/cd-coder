@@ -145,7 +145,7 @@ class OllamaClient:
         resp = _call_with_retries(
             lambda: self._client.chat(
                 model=self.model, messages=messages, tools=tools,
-                options={"num_ctx": self.num_ctx}
+                options={"num_ctx": self.num_ctx, "num_predict": 2048}
             ),
             label="Ollama")
         msg = resp.message
@@ -158,8 +158,11 @@ class OllamaClient:
             recovered = _extract_xml_tool_calls(msg.content) or _extract_tool_calls_from_text(msg.content)
             if recovered:
                 calls = recovered
-                text_out = None              # don't print the raw JSON
-                msg = {"role": "assistant", "content": ""}  # keep raw JSON out of history
+                clean = re.sub(r'<function=.*?</function>', '', msg.content, flags=re.DOTALL).strip()
+                clean = re.sub(r'\{[^{}]{0,2000}"name"\s*:[^{}]*"arguments"[^{}]*\}', '', clean,
+                               flags=re.DOTALL).strip()
+                text_out = clean or None
+                msg = {"role": "assistant", "content": clean}
         reply = Reply(text_out, calls, msg)
         reply.finish_reason = getattr(resp, "done_reason", None)
         return reply
@@ -233,7 +236,7 @@ class GroqClient:
         return {"role": "tool", "tool_call_id": call.id,
                 "name": call.name, "content": output}
 
-
+import  os
 class OpenAICompatClient:
     """OpenAI-compatible endpoint (OpenRouter / Together / Fireworks / DeepInfra)
     over Python's stdlib urllib — NO extra package to install. Default config
@@ -337,6 +340,11 @@ def make_client(provider: str, model: str, num_ctx: int = 32768, ollama_host: st
         c = OpenAICompatClient(model, "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY")
     elif provider == "github":
         c = OpenAICompatClient(model, "https://models.github.ai/inference", "GITHUB_TOKEN")
+    elif provider == "vllm":  # ADD THIS BLOCK
+        import config as _cfg
+        host = _cfg.VLLM_HOST.rstrip("/")
+        os.environ.setdefault("VLLM_API_KEY", "dummy")
+        c = OpenAICompatClient(model, host + "/v1", "VLLM_API_KEY")
     else:
         raise ValueError(f"Unknown provider '{provider}'. Use ollama, groq, openrouter, "
                          f"gemini, cerebras, or github.")

@@ -17,6 +17,7 @@ _MODEL_FOR = {
     "gemini": config.GEMINI_MODEL,
     "cerebras": config.CEREBRAS_MODEL,
     "github": config.GITHUB_MODEL,
+    "vllm": config.VLLM_MODEL,
 }
 
 

@@ -789,7 +789,7 @@ _IGNORE = {".git", "__pycache__", "node_modules", ".venv", "venv"}
 # Tools that mutate files — the agent uses this to know when to auto-compile.
 EDIT_TOOLS = {"edit_file", "add_case"}  # trimmed: other editors still work if called, just not advertised
 
-MAX_READ_LINES = 250  # cap so a huge file can't flood a small model's context
+MAX_READ_LINES = 600  # cap so a huge file can't flood a small model's context
 
 try:
     from coder import java_ast
@@ -982,12 +982,10 @@ def read_file(repo: Path, path: str, line_start: int = None, line_end: int = Non
 def read_symbol(repo: Path, path: str, name: str) -> str:
     """Read ONE class/method/field by name instead of the whole file. Use this to
     inspect a single function (e.g. savePaymentLink) in a large file."""
-    p = _safe_path(repo, path)
-    if not p.exists():
-        p2, _rel, _msg = _resolve(repo, path)
-        if p2 is None:
-            return _msg
-        p, path = p2, _rel
+    p, rel, err = _resolve(repo, path)
+    if p is None:
+        return err
+    path = rel
     if not _JAVA_OK:
         return "ERROR: java_ast unavailable; use read_file with line_start/line_end."
     src = p.read_text(encoding="utf-8", errors="replace")

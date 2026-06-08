@@ -114,7 +114,7 @@ def build_embeddings(repo: Path, db_path: str, embed_fn,
     return len(rows)
 
 
-def semantic_search(db_path: str, query: str, embed_fn, top: int = 6):
+def semantic_search(db_path: str, query: str, embed_fn, top: int = 15):
     db = sqlite3.connect(db_path)
     rows = db.execute("SELECT name, kind, file, line_start, line_end, vec FROM embeddings").fetchall()
     db.close()
