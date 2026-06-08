@@ -1480,11 +1480,11 @@ TOOL_SCHEMAS = [
         "description": "Index lookup: symbol location + callers + callees. No file read needed.",
         "parameters": {"type": "object", "properties": {"name": {"type": "string"}},
                        "required": ["name"]}}},
-    {"type": "function", "function": {
-        "name": "find_symbol",
-        "description": "Semantic search by description (e.g. 'cron that deletes POs').",
-        "parameters": {"type": "object", "properties": {"query": {"type": "string"}},
-                       "required": ["query"]}}},
+    # {"type": "function", "function": {
+    #     "name": "find_symbol",
+    #     "description": "Semantic search by description (e.g. 'cron that deletes POs').",
+    #     "parameters": {"type": "object", "properties": {"query": {"type": "string"}},
+    #                    "required": ["query"]}}},
     {"type": "function", "function": {
         "name": "edit_file",
         "description": "Replace an exact text block in a file. Read the file first; old_str must match.",
