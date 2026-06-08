@@ -4,9 +4,10 @@
 import subprocess, sys, os
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parent   # where main.py lives
-_CHANNEL_REF = "origin/main"                   # branch that holds channel.txt
-_CHANNEL_FILE = "channel.txt"                  # file inside that branch
+_REPO_ROOT = Path(__file__).resolve().parent
+_CHANNEL_REF = "origin/main"
+_CHANNEL_FILE = "channel.txt"
+
 
 def _git(*args: str, check=True) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -14,44 +15,48 @@ def _git(*args: str, check=True) -> subprocess.CompletedProcess:
         capture_output=True, text=True, check=check
     )
 
-def _self_update() -> None:
-    """Fetch latest code from the channel branch; re-exec if anything changed."""
-    # Skip if we're running inside a venv build / CI / explicit opt-out
-    if os.environ.get("CD_AI_NO_UPDATE"):
-        return
 
+def gitInit():
     try:
-        # 1. Fetch quietly
+
+        print("[cd-ai] Fetching latest...")
         _git("fetch", "origin", "--quiet")
 
-        # 2. Read target branch name from the fixed file on origin/main
-        result = _git("show", f"{_CHANNEL_REF}:{_CHANNEL_FILE}")
-        target_branch = result.stdout.strip()
+        # Read target branch from channel.txt on origin/main
+        target_branch = _git("show", f"{_CHANNEL_REF}:{_CHANNEL_FILE}").stdout.strip()
         if not target_branch:
-            return  # channel file empty — do nothing
+            raise SystemExit("[cd-ai] channel.txt is empty. Ask the owner for the correct branch.")
 
-        # 3. Find out what commit origin/<target_branch> is at
         remote_ref = f"origin/{target_branch}"
+
+        # Check if update is needed
         remote_sha = _git("rev-parse", remote_ref).stdout.strip()
-        local_sha  = _git("rev-parse", "HEAD").stdout.strip()
+        local_sha = _git("rev-parse", "HEAD").stdout.strip()
+        needs_update = remote_sha != local_sha
 
-        if remote_sha == local_sha:
-            return  # already up to date
+        if needs_update:
+            print(f"[cd-ai] Switching to branch '{target_branch}'...")
+            _git("reset", "--hard", remote_ref)
 
-        # 4. Check out the target branch and hard-reset to origin
-        print(f"[cd-ai] Updating to branch '{target_branch}' ({remote_sha[:7]})…")
-        _git("checkout", target_branch, check=False)   # may already be on it
-        _git("reset", "--hard", remote_ref)
+            # Auto-install requirements if requirements.txt exists
+            req_file = _REPO_ROOT / "requirements.txt"
+            if req_file.exists():
+                print("[cd-ai] Installing dependencies...")
+                subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "-q", "-r", str(req_file)],
+                    check=True
+                )
 
-        # 5. Re-exec so the updated code actually runs
-        print("[cd-ai] Restarting with updated code…\n")
+        # Re-exec with real main.py
+        print("[cd-ai] Launching...\n")
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
     except subprocess.CalledProcessError as e:
-        # Never crash the agent over an update failure — just warn and continue
-        print(f"[cd-ai] Auto-update skipped: {e.stderr.strip() or e}", file=sys.stderr)
+        raise SystemExit(f"[cd-ai] Git error: {e.stderr.strip() or e}")
 
-_self_update()
+
+
+gitInit()
 # ── End self-update block ───────────────────────────────────────────────────
 
 
