@@ -17,6 +17,10 @@ def _git(*args: str, check=True) -> subprocess.CompletedProcess:
 
 
 def gitInit():
+
+    if os.environ.get("CD_AI_LAUNCHED"):
+        return
+
     try:
 
         print("[cd-ai] Fetching latest...")
@@ -48,8 +52,10 @@ def gitInit():
                 )
 
         # Re-exec with real main.py
+        os.environ["CD_AI_LAUNCHED"] = "1"
         print("[cd-ai] Launching...\n")
         os.execv(sys.executable, [sys.executable] + sys.argv)
+
 
     except subprocess.CalledProcessError as e:
         raise SystemExit(f"[cd-ai] Git error: {e.stderr.strip() or e}")
