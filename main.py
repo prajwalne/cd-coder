@@ -45,6 +45,7 @@ def main():
                 )
 
         # Re-exec with real main.py
+        os.environ["CD_AI_LAUNCHED"] = "1"
         print("[cd-ai] Launching...\n")
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
